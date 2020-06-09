@@ -1,56 +1,82 @@
-# Get one table from a SQLite database
+# Get one dataset from an HDF5 database
+# TODO H5PLEXOS: The get_table() function in the original rplexos needs to be finished getting rewritten as a function
+# that approximates special tables within an rplexos SQLite database:
+# - data_properties (implemented), a table containing all query-able properties (one in each row) and their metadata for 
+#   every scenario [used in plexos_open() and query_property()]
+# - metadata_properties (implemented), a table containing every interval timestamp for every scenario [used in sum_master()]
+# - config, a table containing PLEXOS run configuration data (e.g. version, date, time, file path, 
+#   model, user) for every scenario [used only in query_config()]
+# - log_info, a table containing log file info that's optionally passed to the solution file, 
+#   including solution times and infeasibilities, for every scenario [used only in query_log()]
+# - log_steps, a table containing solution times and ?? other stuff optionally passed to the solution
+#   file for every scenario [used only in query_log_steps]
+#
+# Any of the tables above that don't have a corresponding function directly below in get_table()
+# aren't currently implemented.
+
 get_table <- function(filename, table) {
-  # Open connection
-  thesql <- DBI::dbConnect(RSQLite::SQLite(), dbname = filename, create = FALSE)
-  # thesql <- src_sqlite(filename, create = FALSE)
+  if (table == 'data_properties'){
+  out <- h5ls(filename) %>% 
+    filter(grepl('/data',.$group)) %>% 
+    filter(otype == 'H5I_DATASET') %>%
+    mutate(dataset_name = paste0(.$group,'/',.$name)) %>% 
+    group_by(group,name, dataset_name) %>% 
+    do(unit = h5readAttributes(file = filename,
+                               name = .$dataset_name)$units) %>% 
+    ungroup() %>% 
+    mutate(group = stringr::str_replace(group,'/data/',''),
+           count_band = 1,
+           count_sample = 1,
+           count_timeslice = 1) %>% 
+    tidyr::separate(group,c('phase','time','collection'),'/') %>% 
+    #mutate(is_summary = ifelse(.$time == 'interval',0,1)) %>% 
+    add_phase_ids %>% 
+    select(collection, 
+           property = name, 
+           unit, 
+           phase_id, 
+           #is_summary,
+           time,
+           dataset_name, 
+           count_band,  # need to figure out what these last three actually do and not hardcode them to one
+           count_sample, 
+           count_timeslice)
 
-  if (table %in% DBI::dbListTables(thesql)) {
-    out <- tbl(thesql, table) %>% collect(n=Inf)
+  # Close H5
+  H5close()
+  # Return result
+  out
+  } else if (table == 'metadata_properties'){
+    out <- h5ls(filename) %>% 
+      filter(grepl('/metadata',.$group)) %>% 
+      filter(otype == 'H5I_DATASET') %>%
+      mutate(dataset_name = paste0(.$group,'/',.$name)) %>% 
+      mutate(metadata_type = stringr::str_replace(group,'/metadata/','')) %>% 
+      select(metadata_type, 
+             name, 
+             dataset_name)
+    
+    # Close H5
+    H5close()
+    # Return result
+    out
+  } else if (table == 'relation') {
+    stop('You are trying to query relations/memberships but they are not implemented yet.')
   } else {
-    out <- data.frame()
+    stop('You are calling a table that does not exist or has not been implemented yet.')
   }
-
-  # Close connection
-  DBI::dbDisconnect(thesql)
-
-  # Return result
-  out
 }
 
-# Get one table from a SQLite database
-get_list_tables <- function(filename) {
-  # Open connection
-  thesql <- DBI::dbConnect(RSQLite::SQLite(), dbname = filename, create = FALSE)
-  # thesql <- src_sqlite(filename, create = FALSE)
+##############
 
+# Get a list of all datasets in an HDF5 database
+get_list_datasets <- function(filename) {
   # Read names
-  out <- data.frame(tables = DBI::dbListTables(thesql))
-
-  # Close connection
-  DBI::dbDisconnect(thesql)
-
+  out <- h5ls(filename) %>% 
+    filter(otype == 'H5I_DATASET') %>% 
+    select(dataset = name)
+  
   # Return result
-  out
-}
-
-#' Get a query for a SQLite file
-#'
-#' Used internally by \code{\link{query_sql}}. Use that function instead to access data. The
-#' use of this function is not recommended
-#'
-#' @param filename SQLite file location
-#' @param sql String containing the SQL query to be performed
-#'
-#' @seealso \code{\link{query_sql}} to perform standard queries of data
-#'
-#' @keywords internal
-#' @export
-get_query <- function(filename, sql) {
-  out <- data.frame()
-  thesql <- DBI::dbConnect(RSQLite::SQLite(), dbname = filename, create = FALSE)
-  # thesql <- src_sqlite(filename, create = FALSE)
-  try(out <- RSQLite::dbGetQuery(thesql, sql))
-  DBI::dbDisconnect(thesql)
   out
 }
 
@@ -59,58 +85,11 @@ get_table_scenario <- function(db, from) {
   # Check inputs
   check_rplexos(db)
   stopifnot(is.character(from), length(from) == 1L)
-
+  
   db %>%
     group_by(scenario, position, filename) %>%
     do(get_table(.$filename, from)) %>%
     ungroup()
-}
-
-#' Get query for all scenarios
-#'
-#' Send a SQL query to all the files in a PLEXOS database object.
-#'
-#' @inheritParams query_master
-#' @param sql String containing the SQL query to be performed
-#'
-#' @seealso \code{\link{plexos_open}} to create the PLEXOS database object
-#' @seealso \code{\link{query_master}} to perform standard queries of data
-#' @family special queries
-#'
-#' @examples
-#' # Process the folder with the solution file provided by rplexos
-#' location <- location_solution_rplexos()
-#' process_folder(location)
-#'
-#' # Query data
-#' db <- plexos_open(location)
-#' query_sql(db, "SELECT * from day")
-#' query_sql(db, "SELECT * from time")
-#'
-#' @export
-query_sql <- function(db, sql) {
-  # Check inputs
-  check_rplexos(db)
-  stopifnot(is.character(sql), length(sql) == 1L)
-
-  # Make sure that columns are reported
-  db <- db %>%
-    group_by(scenario, position, filename)
-
-  # Get query data
-  if (!is_parallel_rplexos()) {
-    out <- db %>%
-      do(get_query(.$filename, sql))
-  } else {
-    out <- foreach(i = db$position, .combine = bind_rows,
-                   .packages = c("dplyr", "rplexos", "DBI", "RSQLite")) %dopar% {
-      db %>%
-        filter(position == i) %>%
-        do(get_query(.$filename, sql))
-    }
-  }
-
-  out %>% ungroup
 }
 
 #' Get list of available properties
@@ -134,70 +113,12 @@ query_sql <- function(db, sql) {
 #'
 #' @export
 query_property <- function(db) {
-  get_table_scenario(db, "property") %>%
+  get_table_scenario(db, "data_properties") %>%
     add_phase_names %>%
-    group_by(phase_id, phase, is_summary, class_group, class, collection, property, unit, scenario) %>%
+    group_by(phase_id, phase, time, collection, property, unit, scenario) %>%
     summarize(n = n()) %>%
     tidyr::spread(scenario, n) %>%
     as.data.frame
-}
-
-#' Query configuration tables
-#'
-#' Get information from the \code{config} table, which includes: PLEXOS version, solution
-#' date and time, machine and location of PLEXOS input database, model description and user
-#' name. Additionally, it stores the version of rplexos used to process the PLEXOS database.
-#'
-#' @inheritParams query_master
-#' @seealso \code{\link{plexos_open}} to create the PLEXOS database object
-#' @family special queries
-#'
-#' @examples
-#' # Process the folder with the solution file provided by rplexos
-#' location <- location_solution_rplexos()
-#' process_folder(location)
-#'
-#' # Query data
-#' db <- plexos_open(location)
-#' query_config(db)
-#'
-#' @export
-query_config <- function(db) {
-  data <- get_table_scenario(db, "config")
-    tidyr::spread(data, element, value) %>%
-    as.data.frame
-}
-
-#' Query log file information
-#'
-#' During the processing of the PLEXOS databases, information from the log file is saved
-#' into the database. This includes solution times and infeasibilities for the different phases.
-#'
-#' @inheritParams query_master
-#' @seealso \code{\link{plexos_open}} to create the PLEXOS database object
-#' @family special queries
-#'
-#' @examples
-#' # Process the folder with the solution file provided by rplexos
-#' location <- location_solution_rplexos()
-#' process_folder(location)
-#'
-#' # Query data
-#' db <- plexos_open(location)
-#' query_log(db)
-#' query_log_steps(db)
-#'
-#' @export
-query_log <- function(db) {
-  get_table_scenario(db, "log_info") %>%
-    select(-position)
-}
-
-#' @rdname query_log
-#' @export
-query_log_steps <- function(db) {
-  get_table_scenario(db, "log_steps") %>%
-    select(-position)
 }
 
 # Query databases ***********************************************************************
@@ -269,10 +190,9 @@ query_log_steps <- function(db) {
 #' @return A data frame that contains data summarized/aggregated by scenario.
 #'
 #' @seealso \code{\link{plexos_open}} to create the PLEXOS database object
-#' @seealso \code{\link{query_sql}} to perform custom queries
 #'
 #' @examples
-#' # Process the folder with the solution file provided by rplexos
+#' # First process
 #' location <- location_solution_rplexos()
 #' process_folder(location)
 #'
@@ -286,6 +206,7 @@ query_log_steps <- function(db) {
 #' @importFrom data.table data.table CJ
 #' @importFrom foreach foreach %dopar%
 query_master <- function(db, time, col, prop, columns = "name", time.range = NULL, filter = NULL, phase = 4) {
+  which_time <- time #alias to avoid confusion with `time` column in db
   # Check inputs
   check_rplexos(db)
   stopifnot(is.character(time), length(time) == 1L)
@@ -298,7 +219,7 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
     stop("'phase' must be one of: 1 (LT), 2 (PASA), 3 (MT) or 4 (ST)", call. = FALSE)
   if(!all(columns %in% valid_columns()))
     stop("Incorrect column parameter. Use valid_columns() to get the full list.", call. = FALSE)
-
+  
   # Key filter checks
   if (!is.null(filter)) {
     stopifnot(is.list(filter))
@@ -307,36 +228,34 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
     if(!all(names(filter) %in% valid_columns()))
       stop("The names in 'filter' must correspond to correct columns. Use valid_columns() to get the full list.", call. = FALSE)
   }
-
+  
   # Time range checks
   if (!is.null(time.range)) {
     stopifnot(length(time.range) == 2L)
-
+    
     if (inherits(time.range, "POSIXt")) {
       time.range2 <- time.range
     } else {
       time.range2 <- c(NA, NA)
-
+      
       if (inherits(time.range, "character")) {
         time.range2 <- lubridate::parse_date_time(time.range, c("ymdHMS", "ymd"), quiet = TRUE)
       }
-
+      
       if(any(is.na(time.range2)))
         stop("time.range must be POSIXt or character with 'ymdHMS' or 'ymd' formats", call. = FALSE)
     }
-
+    
     # Convert dates to ymdhms format, so that queries work correctly
     time.range <- format(time.range2, "%Y-%m-%d %H:%M:%S")
   }
-
+  
   ### BEGIN: Master query checks
-
+  
   # Get list of properties for the collection
-  is.summ <- ifelse(identical(time, "interval"), 0, 1)
-  is.summ.txt <- ifelse(identical(time, "interval"), "interval", "summary")
   res <- bind_rows(db$properties) %>%
-    filter(collection == col, is_summary == is.summ, phase_id == phase)
-
+    filter(collection == col, time == time, phase_id == phase, time == which_time)
+  
   # Check that collection is valid
   if (nrow(res) == 0L) {
     stop("Collection '", col, "' is not valid for ",
@@ -344,23 +263,24 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
          "   Use query_property() for list of collections and properties.",
          call. = FALSE)
   }
-
+  
   # Checks if properties are valid
   if (!identical(prop, "*")) {
     invalid.prop <- setdiff(prop, res$property)
-     if (length(invalid.prop) > 0L) {
+    if (length(invalid.prop) > 0L) {
       stop("Properties ", paste0("'", invalid.prop, "'", collapse = ", "), " in collection '", col,
-           "' are not valid for ", is.summ.txt, " data and phase '", phase, "'.\n",
+           "' are not valid for ", which_time, " data and phase '", phase, "'.\n",
            "   Use query_property() for list of available collections and properties.",
            call. = FALSE)
-     }
-
+    }
+    
     # Filter properties
     res <- res %>%
       filter(property %in% prop)
   }
-
+  
   # Find if the data is going to have multiple sample, timeslices or bands
+  # TODO H5: This is not yet implemented in the H5PLEXOS-based version of rplexos.
   res2 <- res %>%
     ungroup() %>%
     summarize(is_multi_band      = max(count_band) > 1,
@@ -372,41 +292,41 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
     columns <- c(setdiff(columns, "band"), "band")
   if (res2$is_multi_sample)
     columns <- c(setdiff(columns, "sample"), "sample")
-
+  
   # Columns should not include collection and property; they are always reported
   columns <- setdiff(columns, c("collection", "property"))
-
+  
   # If columns include name, add parent automatically
   if ("name" %in% columns)
     columns <- c("name", "parent", setdiff(columns, c("name", "parent")))
-
+  
   ### END: Master query checks
-
+  
   # Query data for each property
   db2 <- db %>%
     group_by(scenario, position)
-
-  if (!is_parallel_rplexos()) {
+  
+  if (TRUE ) { #!is_parallel_rplexos()) { #TODO H5: implement this later once I figure out how to set rplexos_globals
     out <- db2 %>%
       do(query_master_each(., time, col, prop, columns, time.range, filter, phase))
   } else {
     out <- foreach(i = db2$position, .combine = bind_rows,
-                   .packages = c("dplyr", "rplexos", "DBI", "RSQLite")) %dopar% {
-      db2 %>%
-        filter(position == i) %>%
-        do(query_master_each(., time, col, prop, columns, time.range, filter, phase))
-    }
+                   .packages = c("dplyr", "rplexos")) %dopar% {
+                     db2 %>%
+                       filter(position == i) %>%
+                       do(query_master_each(., time, col, prop, columns, time.range, filter, phase))
+                   }
   }
-
+  
   # Ungroup results
   out <- out %>% ungroup
-
+  
   # Return empty dataframe if no results were returned
   if (nrow(out) == 0) {
     warning("Query returned no results", call. = FALSE)
     return(data.frame())
   }
-
+  
   # Check if any scenario is missing from the results
   missing.scenario <- setdiff(unique(db$scenario), unique(out$scenario))
   if (length(missing.scenario) >= 1L) {
@@ -414,11 +334,11 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
             paste(missing.scenario, collapse = ", "),
             call. = FALSE)
   }
-
+  
   # Solve ties if they exist
   out <- out %>%
     solve_ties()
-
+  
   out
 }
 
@@ -433,136 +353,99 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
 #'
 #' @keywords internal
 #' @export
+
 query_master_each <- function(db, time, col, prop, columns = "name", time.range = NULL, filter = NULL, phase = 4) {
-  # Open connection
-  thesql <- DBI::dbConnect(RSQLite::SQLite(), dbname = db$filename, create = FALSE)
-  # thesql <- src_sqlite(db$filename, create = FALSE)
+  which_time <- time #alias to avoid confusion with `time` column in db
+  # Grab whichever datasets should be queried:
+  datasets_to_query <- data.frame(db$properties) %>% 
+    filter(.$time == which_time, collection == col, property %in% prop, phase_id == phase ) %>% 
+    select(collection,property,dataset_name,unit,phase_id)
+  metadata_to_query <- get_table(db$filename,'metadata_properties') %>% 
+    filter(grepl(col,.$name))  #implement this get_table in plexos_open instead and include it in db object
+  
+  # First, get the list of objects.
+  # If there's a match with a dataset of metadata_type "object", the output is name and category. If the type is "relation", 
+  # the output is parent (which is "name") and child. 
+  objects <- h5read(file = db$filename, 
+                    (metadata_to_query %>% 
+                      filter(.$name == col))$dataset_name)
+  # If the metadata for the objects is a relation, change the names:
+  if('parent' %in% names(objects)) names(objects) <- c('name','category')
+  
+  # Query timestamps:
+  timestamps <- data.frame(time = h5read(file = db$filename, 
+                                         name =  paste0('/metadata/times/',which_time))) %>% 
+    mutate(time = lubridate::ymd_hms(time, quiet = TRUE))
+  
+  # Grab the number of time periods to offset the beginning of the records by:
+  period_offset <- h5readAttributes(file = db$filename,
+                                    name = datasets_to_query$dataset_name[1])$period_offset
 
-  if (!identical(time, "interval")) {
-    # # Process the db on the fly if this is an on the fly db
-    # process_table(db, thesql, paste0('data_',time))
-    
-    # Query interval data
-    if (identical(prop, "*")) {
-      out <- tbl(thesql, time)
-    } else if (length(prop) == 1L) {
-      # Workaround for a problem with dplyr
-      out <- tbl(thesql, time) %>% filter(property == prop)
+  # Now construct the output by querying for the values, the names of the associated objects, any relations requested: 
+  values <- data.frame(datasets_to_query) %>% 
+    group_by(dataset_name,collection,property,unit) %>% 
+    do(value = matrix(drop(h5read(file = db$filename,
+                               name = .$dataset_name)))) %>% 
+    ungroup() %>%
+    mutate(unit = unlist(unit)) %>% 
+    tidyr::unnest() %>% 
+    mutate(value = drop(pull(.$value)))
+  
+  # The timestamps in an h5plexos db include an entire year's worth of entries even if the solution is
+  # for a model that has a horizon of, say, six months. So, only keep the number of entries equal to the
+  # number of columns in each dataset.
+  num_timestamps_in_query <- dim(values)[1]/length(prop)/dim(objects)[1]
+  
+  # Add timestamps and object names:
+  out <- values %>% 
+    mutate(time = rep(timestamps[seq(period_offset + 1, period_offset + num_timestamps_in_query),], 
+                      length.out =dim(values)[1])) %>% 
+    mutate(name = rep(objects$name,
+                      each = num_timestamps_in_query,
+                      length.out =dim(values)[1])) %>% 
+    select(collection,
+           property,
+           unit,
+           name,
+           time,
+           value)
+  
+  # For yearly queries, the HDF5 only reports one timestamp of e.g. "<year>-12-31T00:00:00", but we need the timestamp
+  # to be the first hour of the model so that the tie-breaker for overlapping data isn't triggered:
+  if(time == 'year') {
+    # Get the starting date from the first dataset with a monthly entry--if there aren't any, try interval data, and if there
+    # are no monthly or interval data, leave the dates the same and keep all entries even with the same time.
+    props_avail <- data.frame(db$properties) %>%
+      filter(time != 'year',phase_id == datasets_to_query$phase_id[1]) %>% 
+      arrange(desc(time))
+          
+    if(length(props_avail) == 0L) {
+      warning("No interval or monthly outputs for the same phase as the query target are present in the solution to be used to set dates for the yearly query,\n",
+              "so only one solution's output will be used per solution, overwriting the others.", 
+              call = FALSE)
+      # TODO: Fix the above so all entries are kept. No good solution for this. Probably should pass a flag column back to query_master.
     } else {
-      out <- tbl(thesql, time) %>% filter(property %in% prop)
-    }
-
-    out <- out %>%
-      filter(collection == col, phase_id == phase) %>%
-      filter_rplexos(filter) %>%
-      filter_rplexos_time(time.range) %>%
-      select_rplexos(columns, add.key = FALSE) %>%
-      collect(n=Inf) %>%
-      mutate(time = lubridate::ymd_hms(time, quiet = TRUE))
-  } else {
-    # Query interval data
-    # Get the table names that store the data
-    if (identical(prop, "*")) {
-      t.name <- db$properties[[1]]
-    } else if(length(prop) == 1L) {
-      t.name <- db$properties[[1]] %>% filter(property == prop)
-    } else {
-      t.name <- db$properties[[1]] %>% filter(property %in% prop)
-    }
-    t.name <- t.name %>%
-      filter(collection == col, phase_id == phase, is_summary == 0) %>%
-      select(collection, property, table_name) %>%
-      mutate(table_name = gsub("data_interval_", "", table_name))
-
-    # If t.name is empty (data is not available), return an empty data frame
-    if (nrow(t.name) == 0L) {
-      DBI::dbDisconnect(thesql)
-      return(data.frame())
-    }
-    
-    # Process the db on the fly if this is an on the fly db
-    process_table(db, thesql, paste0('data_interval_',t.name$table_name))
-
-    # Get max/min time existing in the table to be queried
-    #   In case time table has more time stamps than those in the dataset
-    time.limit <- t.name %>%
-      group_by(collection, property) %>%
-      do(
-        tbl(thesql, .$table_name) %>%
-          filter(phase_id == phase) %>%
-          summarize(time_from = min(time_from), time_to = max(time_to)) %>%
-          collect(n=Inf)
-      )
-    min.time.data <- min(time.limit$time_from)
-    max.time.data <- max(time.limit$time_to)
-
-    # Collect time data
-    time.data <- tbl(thesql, "time") %>%
-      filter(phase_id == phase) %>%
-      filter(between(time, min.time.data, max.time.data)) %>%
-      filter_rplexos_time(time.range) %>%
-      select(time) %>%
-      collect(n=Inf)
-
-    # If time data is empty, return an empty data frame
-    if (nrow(time.data) == 0L) {
-      DBI::dbDisconnect(thesql)
-      return(data.frame())
-    }
-
-    # Convert into R time-data format
-    time.data$time <- lubridate::ymd_hms(time.data$time, quiet = TRUE)
-
-    # Get interval data
-    out1 <- t.name %>%
-      group_by(collection, property) %>%
-      do(tbl(thesql, .$table_name) %>%
-           filter(phase_id == phase) %>%
-           filter_rplexos(filter) %>%
-           filter_rplexos_time(time.range, modified = TRUE) %>%
-           select(-time_to) %>%
-           rename(time = time_from) %>%
-           select_rplexos(columns, add.key = TRUE) %>%
-           collect(n=Inf)
-      ) %>%
-      ungroup %>%
-      mutate(time = lubridate::ymd_hms(time, quiet = TRUE))
-
-    # Expand data
-    #   This will be easier when dplyr supports rolling joins
-    out2 <- data.table(out1, key = "key,time")
-    cj2 <- CJ(key = unique(out1$key), time = time.data$time)
-
-    out3 <- out2[cj2, roll = TRUE]
-    out <- out3 %>%
-      as.data.frame(stringsAsFactors = FALSE) %>%
-      select(-key)
-
-    # Restore time zone
-    attributes(out$time) <- attributes(time.data$time)
+      timestamps_for_year <- data.frame(time = h5read(file = db$filename, 
+                                                  name =  paste0('/metadata/times/',props_avail$time[1]))) %>% 
+        mutate(time = lubridate::ymd_hms(time, quiet = TRUE))
+      period_offset_for_year <- h5readAttributes(file = db$filename,
+                       name = props_avail$dataset_name[1])$period_offset
+      
+      out <- mutate(out, time = timestamps_for_year[period_offset_for_year + 1,]) 
+      }
   }
-
-  # Disconnect database
-  DBI::dbDisconnect(thesql)
+  
+  # Close H5
+  H5close()
+  
+  out <- out %>%
+    filter_rplexos(filter) %>%
+    filter_rplexos_time(time.range) %>%
+    select_rplexos(columns, add.key = FALSE) %>%
+    collect(n=Inf)
 
   # Return value
   return(out)
-}
-
-process_table <- function(db, thesql, table_name){
-  is_otf <- collect(tbl(thesql, 'config'), n = Inf) %>% filter(element == 'OTF') %>% .$value %>% as.logical()
-  if(length(is_otf) == 0){
-    is_otf <- F
-  }
-  if(is_otf){
-    otf_tables_done <- collect(tbl(thesql, 'on_the_fly'), n = Inf)
-    
-    # if the queried table is not yet processed, process it now
-    if(!(table_name %in% otf_tables_done$table_name)){
-      file <- db$filename %>% gsub('-rplexos.db','.zip',.)
-      add_data(file, add_tables = table_name, initial = F)
-    }
-  }
 }
 
 
@@ -575,13 +458,13 @@ solve_ties <- function(x, opt = getOption("rplexos.tiebreak")) {
     warning("Invalid 'rplexos.tiebreak' option (must be one of: first, last, all). Using last instead", call. = FALSE)
     opt <- "last"
   }
-
+  
   if (opt %in% c("first", "last")) {
     # Group by time
     x2 <- x %>%
       ungroup() %>%
       group_by(scenario, time)
-
+    
     if (identical(opt, "last")) {
       # If there are repeats, use the latter entry
       x2 <- x2 %>%
@@ -591,13 +474,13 @@ solve_ties <- function(x, opt = getOption("rplexos.tiebreak")) {
       x2 <- x2 %>%
         filter(position == min(position))
     }
-
+    
     # Ungroup and delete path column
     x2 <- x2 %>%
       ungroup() %>%
       select(-position)
   }
-
+  
   x2
 }
 
@@ -625,17 +508,17 @@ query_year     <- function(db, ...) query_master(db, "year", ...)
 sum_master <- function(db, time, col, prop, columns = "name", time.range = NULL, filter = NULL, phase = 4, multiply.time = FALSE) {
   # Check inputs to unique
   stopifnot(is.logical(multiply.time), length(multiply.time) == 1L)
-
+  
   # Make sure to include time
   columns2 <- c(setdiff(columns, "time"), "time")
-
+  
   # Run query_master to get the raw data
   out <- query_master(db, time, col, prop, columns2, time.range, filter, phase)
-
+  
   # If empty query is returned, return empty data.frame
   if(nrow(out) == 0L)
     return(data.frame())
-
+  
   if (identical(time, "interval") && (!"time" %in% columns) && multiply.time) {
     # Get length of intervals in hours
     times <- get_table_scenario(db, "time")
@@ -645,13 +528,13 @@ sum_master <- function(db, time, col, prop, columns = "name", time.range = NULL,
       summarize(interval = difftime(lead(time), time, units = "hours") %>%
                   min(na.rm = TRUE) %>%
                   as.numeric)
-
+    
     # Add interval duration to the sum
     out <- out %>%
       inner_join(delta, by = "scenario") %>%
       group_by_char(c("scenario", "collection", "property", columns)) %>%
       summarise(value = sum(value * interval))
-
+    
     # If unit is a column, modify column
     if ("unit" %in% names(out)) {
       out <- out %>%
@@ -663,7 +546,7 @@ sum_master <- function(db, time, col, prop, columns = "name", time.range = NULL,
       group_by_char(c("scenario", "collection", "property", columns)) %>%
       summarise(value = sum(value))
   }
-
+  
   out
 }
 
@@ -693,10 +576,10 @@ filter_rplexos_time <- function(out, time.range, modified = FALSE) {
     if (modified) {
       out <- filter(out, time_from <= time.range[2], time_to >= time.range[1])
     } else {
-      out <- filter(out, between(time, time.range[1], time.range[2]))
+      out <- filter(out, between(as.Date(time), as.Date(time.range[1]), as.Date(time.range[2])))
     }
   }
-
+  
   out
 }
 
@@ -707,7 +590,7 @@ filter_rplexos <- function(out, filt) {
     return(out)
   if (length(filt) == 0L)
     return(out)
-
+  
   # Split in positive and negative filters
   filt_out <- lapply(filt, function(x){
     neg <- substr(x, 1, 1)=='-'
@@ -716,13 +599,13 @@ filter_rplexos <- function(out, filt) {
     x
   })
   filt_out <- filt_out[lapply(filt_out,length)>0] # remove empty categories
-
+  
   filt_in <- lapply(filt, function(x){
     pos <- substr(x, 1, 1)!='-'
     x[pos]
   })
   filt_in <- filt_in[lapply(filt_in,length)>0] # remove empty categories
-
+  
   # Write the condition as text
   if(length(filt_out)>0){
     vals_out <- lapply(filt_out, function(x)
@@ -733,7 +616,7 @@ filter_rplexos <- function(out, filt) {
     out <- out %>%
       filter_(.dots = cond_out) # Apply condition
   }
-
+  
   if(length(filt_in)>0){
     vals_in <- lapply(filt_in, function(x)
       paste0("\"", x, "\"", collapse = ", ")) %>%
@@ -743,7 +626,7 @@ filter_rplexos <- function(out, filt) {
     out <- out %>%
       filter_(.dots = cond_in) # Apply condition
   }
-
+  
   out
 }
 
@@ -754,10 +637,55 @@ select_rplexos <- function(x, columns, add.key) {
   } else {
     columns.dots <- c("collection", "property", "unit", setdiff(columns, "time"), "time", "value")
   }
-
-  columns.dots <- columns.dots %>%
-    as.list %>%
-    lapply(as.symbol)
-
-  select_(x, .dots = columns.dots)
+  
+  relations <- data.frame(t(data.frame(strsplit(metadata_to_query$name,"_"))))
+  names(relations) <- c('parent','child')
+  
+  if("category" %in% columns.dots){
+    if("category" %in% names(objects)) {
+    x <- mutate(x, category = rep(objects$category,
+                                  each = num_timestamps_in_query,
+                                  length.out =dim(values)[1]))
+    } else {
+    warning("This collection is a relation rather than an object, so it doesn't have 'categories' defined. Returning its children in that column instead.", call. = FALSE)
+      x <- mutate(x, category = rep(objects$child,
+                                    each = num_timestamps_in_query,
+                                    length.out =dim(values)[1]))
+    } 
+  }
+  
+  if("region" %in% columns.dots){
+    if(any(grepl("region",relations$parent))) {
+      objects <- left_join(x, h5read(file = db$filename, 
+                                     name = metadata_to_query[grepl("region",relations$parent),]$dataset_name),
+                           by = c('name' = 'child'))
+    } else if(any(grepl("region",relations$child))) {
+      objects <- left_join(x, h5read(file = db$filename, 
+                                     name = metadata_to_query[grepl("region",relations$child),]$dataset_name),
+                           by = c('name' = 'parent'))
+    }
+    warning("Participation factors aren't reported in the h5 database,\n",
+            "so any object that has memberships in multiple regions will appear multiple times with its full value\n",
+            "(i.e. don't blindly sum up this table)", call. = FALSE)
+  }
+  
+  if("zone" %in% columns.dots){
+    if(any(grepl("zone",relations$parent))) {
+      objects <- left_join(x, h5read(file = db$filename, 
+                                     name = metadata_to_query[grepl("zone",relations$parent),]$dataset_name),
+                           by = c('name' = 'child'))
+    } else if(any(grepl("zone",relations$child))) {
+      objects <- left_join(x, h5read(file = db$filename, 
+                                     name = metadata_to_query[grepl("zone",relations$child),]$dataset_name),
+                           by = c('name' = 'parent'))
+    }
+    warning("Participation factors aren't reported in the h5 database,\n",
+            "so any object that has memberships in multiple zones will appear multiple times with its full value\n",
+            "(i.e. don't blindly sum up this table)", call. = FALSE)  }
+  
+  if(any(c("period_type","band","sample","timeslice") %in% columns.dots)) {
+    stop("The columns 'period_type,' 'band,' 'sample,' and 'timeslice' aren't implemented in the HDF5 version of rplexos yet.", call. = FALSE)
+  }
+  
+  x
 }

@@ -4,8 +4,7 @@
 #' the folders in the working directory will be processed (the list of folders if provided by
 #' the \code{\link{list_folders}} function).
 #' 
-#' Do not rename the SQLite databases created with the \code{\link{process_folder}} family of functions.
-#' The code expects those filenames to remain unchanged.
+#' Any HDF5 databases created with H5PLEXOS's \code{\link{process}} function should be read and handled correctly.
 #' 
 #' @param folders character. Folder(s) where the data is located (each folder represents a scenario)
 #' @param names character. Scenario names
@@ -41,8 +40,7 @@ plexos_open <- function(folders = ".", names = folders) {
   # Function to list PLEXOS files in each folder
   plexos_list_files <- function(df) {
     filename <- list.files(df$folder %>% as.character,
-                           pattern = "rplexos.db$", full.names = TRUE)
-    
+                           pattern = ".h5$", full.names = TRUE)
     if (length(filename) == 0L)
       return(data.frame())
 
@@ -62,7 +60,7 @@ plexos_open <- function(folders = ".", names = folders) {
   # Error if all folders were empty
   if (nrow(df) == 0L)
     stop("No databases found in the list of folders.\n",
-         "Did you forget to use process_folder()?",
+         "Did you forget to process the solution with H5PLEXOS?",
          call. = FALSE)
   
   # Check for folders without databases
@@ -74,40 +72,18 @@ plexos_open <- function(folders = ".", names = folders) {
             call. = FALSE)
   }
   
+  
   # Open databases
   out <- df %>%
     ungroup() %>%
     mutate(position = 1:n()) %>%
     group_by(scenario, position, filename) %>%
-    do(tables = get_list_tables(.$filename),
-       properties = get_table(.$filename, "property")) %>%
+    do(datasets = get_list_datasets(.$filename),
+       properties = get_table(.$filename, "data_properties")) %>%
     ungroup()
-  
+
   # Add rplexos class to object
   class(out) <- c("rplexos", class(out))
-  
-  # Check the version of rplexos
-  conf <- query_config(out)
-  this.vers <- packageVersion("rplexos") %>% as.character
-  if (!"rplexos" %in% names(conf)) {
-    # rplexos is not even an entry in the config table
-    warning("File(s) processed with an old version of rplexos. ",
-            "Rerun process_folder() to avoid problems.",
-            call. = FALSE)
-  } else {
-    # Compare to installed version
-    comp <- sapply(conf$rplexos, compareVersion, this.vers)
-    
-    if (any(comp > 0)) {
-      warning("File(s) processed with a newer version of rplexos. ",
-              "Update rplexos or rerun process_folder() to avoid problems.",
-              call. = FALSE)
-    } else if (any(comp < 0)) {
-      warning("File(s) processed with an older version of rplexos. ",
-              "Rerun process_folder() to avoid problems.",
-              call. = FALSE)
-    }
-  }
   
   out
 }
@@ -117,7 +93,7 @@ plexos_open <- function(folders = ".", names = folders) {
 print.rplexos <- function(x, ...) {
   out <- x %>%
     group_by(scenario, position, filename) %>%
-    summarize(tables = nrow(tables[[1]]),
+    summarize(datasets = nrow(datasets[[1]]),
               properties = nrow(properties[[1]])) %>%
     ungroup() %>%
     print()
