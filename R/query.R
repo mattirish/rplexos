@@ -116,7 +116,7 @@ query_property <- function(db) {
   get_table_scenario(db, "data_properties") %>%
     add_phase_names %>%
     group_by(phase_id, phase, time, collection, property, unit, scenario) %>%
-    summarize(n = n()) %>%
+    dplyr::summarize(n = n()) %>%
     tidyr::spread(scenario, n) %>%
     as.data.frame
 }
@@ -259,7 +259,7 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
   # Check that collection is valid
   if (nrow(res) == 0L) {
     stop("Collection '", col, "' is not valid for ",
-         is.summ.txt, " data and phase '", phase, "'.\n",
+         which_time, " data and phase '", phase, "'.\n",
          "   Use query_property() for list of collections and properties.",
          call. = FALSE)
   }
@@ -353,7 +353,6 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
 #'
 #' @keywords internal
 #' @export
-
 query_master_each <- function(db, time, col, prop, columns = "name", time.range = NULL, filter = NULL, phase = 4) {
   which_time <- time #alias to avoid confusion with `time` column in db
   # Grab whichever datasets should be queried:
@@ -389,7 +388,7 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
     ungroup() %>%
     mutate(unit = unlist(unit)) %>% 
     tidyr::unnest() %>% 
-    mutate(value = drop(pull(.$value)))
+    mutate(value = drop(pull(.$value,value)))
   
   # The timestamps in an h5plexos db include an entire year's worth of entries even if the solution is
   # for a model that has a horizon of, say, six months. So, only keep the number of entries equal to the
@@ -397,12 +396,16 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   num_timestamps_in_query <- dim(values)[1]/length(prop)/dim(objects)[1]
   
   # Add timestamps and object names:
+  print(sprintf('dims of values div num props: %s   dims of objects$name: %s',dim(values)[1]/length(prop),dim(objects$name)))
   out <- values %>% 
     mutate(time = rep(timestamps[seq(period_offset + 1, period_offset + num_timestamps_in_query),], 
                       length.out =dim(values)[1])) %>% 
     mutate(name = rep(objects$name,
                       each = num_timestamps_in_query,
                       length.out =dim(values)[1])) %>% 
+    # mutate(name = rep(objects$category,
+    #                   each = num_timestamps_in_query,
+    #                   length.out =dim(values)[1])) %>% 
     select(collection,
            property,
            unit,
@@ -435,15 +438,74 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
       }
   }
   
-  # Close H5
-  H5close()
   
+  # BEGIN Dynamic selection of the columns to be included (this used to be in its own function, select_rplexos(), 
+  # but constructing the columns from an h5 requires many of the local variables in this main function):
+  columns.dots <- c("collection", "property", "unit", setdiff(columns, "time"), "time", "value")
+  
+  relations <- data.frame(t(data.frame(strsplit(metadata_to_query$name,"_"))))
+  names(relations) <- c('parent','child')
+  
+  if("category" %in% columns.dots){
+    if("category" %in% names(objects)) {
+      warning(sprintf("within select_rplexos, dim objects$category: %s   dim num_timestamps_in_query: %s   dim out: ",dim(objects$category),dim(num_timestamps_in_query),dim(out)[1]), call. = FALSE)
+      out <- mutate(out, category = rep(objects$category,
+                                    each = num_timestamps_in_query,
+                                    length.out =dim(out)[1]))
+    } else {
+      warning("This collection is a relation rather than an object, so it doesn't have 'categories' defined. Returning its children in that column instead.", call. = FALSE)
+      out <- mutate(out, category = rep(objects$child,
+                                      each = num_timestamps_in_query,
+                                      length.out =dim(out)[1]))
+    } 
+  }
+  
+  if("region" %in% columns.dots){
+    if(any(grepl("region",relations$parent))) {
+      objects <- left_join(out, h5read(file = db$filename, 
+                                       name = metadata_to_query[grepl("region",relations$parent),]$dataset_name),
+                           by = c('name' = 'child'))
+    } else if(any(grepl("region",relations$child))) {
+      objects <- left_join(out, h5read(file = db$filename, 
+                                       name = metadata_to_query[grepl("region",relations$child),]$dataset_name),
+                           by = c('name' = 'parent'))
+    }
+    warning("Participation factors aren't reported in the h5 database,\n",
+            "so any object that has memberships in multiple regions will appear multiple times with its full value\n",
+            "(i.e. don't blindly sum up this table)", call. = FALSE)
+  }
+  
+  if("zone" %in% columns.dots){
+    if(any(grepl("zone",relations$parent))) {
+      objects <- left_join(out, h5read(file = db$filename, 
+                                       name = metadata_to_query[grepl("zone",relations$parent),]$dataset_name),
+                           by = c('name' = 'child'))
+    } else if(any(grepl("zone",relations$child))) {
+      objects <- left_join(out, h5read(file = db$filename, 
+                                       name = metadata_to_query[grepl("zone",relations$child),]$dataset_name),
+                           by = c('name' = 'parent'))
+    }
+    warning("Participation factors aren't reported in the h5 database,\n",
+            "so any object that has memberships in multiple zones will appear multiple times with its full value\n",
+            "(i.e. don't blindly sum up this table)", call. = FALSE)  }
+  
+  if(any(c("period_type","band","sample","timeslice") %in% columns.dots)) {
+    stop("The columns 'period_type,' 'band,' 'sample,' and 'timeslice' aren't implemented in the HDF5 version of rplexos yet.", call. = FALSE)
+  }
+  # END column selection
+  
+  print(sprintf('out before select_rplexos call for %s:',db$filename))
+  print(tail(out))
   out <- out %>%
     filter_rplexos(filter) %>%
     filter_rplexos_time(time.range) %>%
-    select_rplexos(columns, add.key = FALSE) %>%
     collect(n=Inf)
-
+  
+  # Close H5
+  H5close()
+  
+  print('out AFTER select_rplexos call:')
+  print(tail(out))
   # Return value
   return(out)
 }
@@ -630,62 +692,4 @@ filter_rplexos <- function(out, filt) {
   out
 }
 
-# Dynamically select the columns
-select_rplexos <- function(x, columns, add.key) {
-  if (add.key) {
-    columns.dots <- c("key", "unit", setdiff(columns, "time"), "time", "value")
-  } else {
-    columns.dots <- c("collection", "property", "unit", setdiff(columns, "time"), "time", "value")
-  }
-  
-  relations <- data.frame(t(data.frame(strsplit(metadata_to_query$name,"_"))))
-  names(relations) <- c('parent','child')
-  
-  if("category" %in% columns.dots){
-    if("category" %in% names(objects)) {
-    x <- mutate(x, category = rep(objects$category,
-                                  each = num_timestamps_in_query,
-                                  length.out =dim(values)[1]))
-    } else {
-    warning("This collection is a relation rather than an object, so it doesn't have 'categories' defined. Returning its children in that column instead.", call. = FALSE)
-      x <- mutate(x, category = rep(objects$child,
-                                    each = num_timestamps_in_query,
-                                    length.out =dim(values)[1]))
-    } 
-  }
-  
-  if("region" %in% columns.dots){
-    if(any(grepl("region",relations$parent))) {
-      objects <- left_join(x, h5read(file = db$filename, 
-                                     name = metadata_to_query[grepl("region",relations$parent),]$dataset_name),
-                           by = c('name' = 'child'))
-    } else if(any(grepl("region",relations$child))) {
-      objects <- left_join(x, h5read(file = db$filename, 
-                                     name = metadata_to_query[grepl("region",relations$child),]$dataset_name),
-                           by = c('name' = 'parent'))
-    }
-    warning("Participation factors aren't reported in the h5 database,\n",
-            "so any object that has memberships in multiple regions will appear multiple times with its full value\n",
-            "(i.e. don't blindly sum up this table)", call. = FALSE)
-  }
-  
-  if("zone" %in% columns.dots){
-    if(any(grepl("zone",relations$parent))) {
-      objects <- left_join(x, h5read(file = db$filename, 
-                                     name = metadata_to_query[grepl("zone",relations$parent),]$dataset_name),
-                           by = c('name' = 'child'))
-    } else if(any(grepl("zone",relations$child))) {
-      objects <- left_join(x, h5read(file = db$filename, 
-                                     name = metadata_to_query[grepl("zone",relations$child),]$dataset_name),
-                           by = c('name' = 'parent'))
-    }
-    warning("Participation factors aren't reported in the h5 database,\n",
-            "so any object that has memberships in multiple zones will appear multiple times with its full value\n",
-            "(i.e. don't blindly sum up this table)", call. = FALSE)  }
-  
-  if(any(c("period_type","band","sample","timeslice") %in% columns.dots)) {
-    stop("The columns 'period_type,' 'band,' 'sample,' and 'timeslice' aren't implemented in the HDF5 version of rplexos yet.", call. = FALSE)
-  }
-  
-  x
-}
+

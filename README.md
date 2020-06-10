@@ -23,5 +23,11 @@ vignette("rplexos")
 - The "parent" column is not included in h5plexos query results, since it's almost always "System" and parent information is not tracked in H5PLEXOS databases for all object types. Queries for special relations included in h5plexos may be included in a future release.
 
 ## Use notes
+- The format of collection names is different from vintage RSQLite-based rplexos due to the different naming scheme used by H5PLEXOS. Examples below:
+	vintage rplexos | H5PLEXOS-based rplexos (this version)
+	"Generator"		| "generators"
+	"Reserve.Generators"	| "reserves_generators"
+	In other words, to change your vintage rplexos queries to enable them for this h5 version, just make everything lowercase and plural and switch periods to underscores. An internal mapping to accomodate the old format may be added in the future.
 - Any file with a ".h5" extension is assumed to be an h5plexos solution.
 - Note that yearly queries will currently erroneously contain the reporting from one model per scenario if there are no monthly- or interval-reported data in the solutions (this seems unlikely, but could be an issue).
+- None of the vignettes have been edited to refer to this new H5PLEXOS-based version yet.

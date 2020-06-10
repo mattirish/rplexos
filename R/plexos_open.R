@@ -76,7 +76,7 @@ plexos_open <- function(folders = ".", names = folders) {
   # Open databases
   out <- df %>%
     ungroup() %>%
-    mutate(position = 1:n()) %>%
+    dplyr::mutate(position = 1:n()) %>%
     group_by(scenario, position, filename) %>%
     do(datasets = get_list_datasets(.$filename),
        properties = get_table(.$filename, "data_properties")) %>%
