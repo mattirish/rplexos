@@ -24,6 +24,7 @@ get_table <- function(filename, table) {
     do(unit = h5readAttributes(file = filename,
                                name = .$dataset_name)$units) %>% 
     ungroup() %>% 
+    mutate(unit = unlist(unit)) %>% 
     mutate(group = stringr::str_replace(group,'/data/',''),
            count_band = 1,
            count_sample = 1,
