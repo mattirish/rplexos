@@ -384,12 +384,12 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   # Now construct the output by querying for the values, the names of the associated objects, any relations requested: 
   values <- data.frame(datasets_to_query) %>% 
     group_by(dataset_name,collection,property,unit) %>% 
-    do(value = matrix(drop(h5read(file = db$filename,
-                               name = .$dataset_name)))) %>% 
+    do(value = h5read(file = db$filename,
+                               name = .$dataset_name)) %>% 
     ungroup() %>%
     mutate(unit = unlist(unit)) %>% 
     tidyr::unnest() %>% 
-    mutate(value = drop(pull(.$value,value)))
+    mutate(value = as.double(value))
   
   # The timestamps in an h5plexos db include an entire year's worth of entries even if the solution is
   # for a model that has a horizon of, say, six months. So, only keep the number of entries equal to the
@@ -397,7 +397,6 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   num_timestamps_in_query <- dim(values)[1]/length(prop)/dim(objects)[1]
   
   # Add timestamps and object names:
-  print(sprintf('dims of values div num props: %s   dims of objects$name: %s',dim(values)[1]/length(prop),dim(objects$name)))
   out <- values %>% 
     mutate(time = rep(timestamps[seq(period_offset + 1, period_offset + num_timestamps_in_query),], 
                       length.out =dim(values)[1])) %>% 
@@ -449,7 +448,6 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   
   if("category" %in% columns.dots){
     if("category" %in% names(objects)) {
-      warning(sprintf("within select_rplexos, dim objects$category: %s   dim num_timestamps_in_query: %s   dim out: ",dim(objects$category),dim(num_timestamps_in_query),dim(out)[1]), call. = FALSE)
       out <- mutate(out, category = rep(objects$category,
                                     each = num_timestamps_in_query,
                                     length.out =dim(out)[1]))
@@ -495,8 +493,6 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   }
   # END column selection
   
-  print(sprintf('out before select_rplexos call for %s:',db$filename))
-  print(tail(out))
   out <- out %>%
     filter_rplexos(filter) %>%
     filter_rplexos_time(time.range) %>%
@@ -505,8 +501,6 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   # Close H5
   H5close()
   
-  print('out AFTER select_rplexos call:')
-  print(tail(out))
   # Return value
   return(out)
 }
