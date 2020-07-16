@@ -297,9 +297,9 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
   # Columns should not include collection and property; they are always reported
   columns <- setdiff(columns, c("collection", "property"))
   
-  # If columns include name, add parent automatically
-  if ("name" %in% columns)
-    columns <- c("name", "parent", setdiff(columns, c("name", "parent")))
+  # # If columns include name, add parent automatically
+  # if ("name" %in% columns)
+  #   columns <- c("name", "parent", setdiff(columns, c("name", "parent")))
   
   ### END: Master query checks
   
@@ -354,6 +354,7 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
 #'
 #' @keywords internal
 #' @export
+
 query_master_each <- function(db, time, col, prop, columns = "name", time.range = NULL, filter = NULL, phase = 4) {
   which_time <- time #alias to avoid confusion with `time` column in db
   # Grab whichever datasets should be queried:
@@ -366,30 +367,39 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   # First, get the list of objects.
   # If there's a match with a dataset of metadata_type "object", the output is name and category. If the type is "relation", 
   # the output is parent (which is "name") and child. 
-  objects <- h5read(file = db$filename, 
-                    (metadata_to_query %>% 
-                      filter(.$name == col))$dataset_name)
-  # If the metadata for the objects is a relation, change the names:
-  if('parent' %in% names(objects)) names(objects) <- c('name','category')
+  objects <- h5read(file = db$filename, (metadata_to_query %>%  filter(col == name))$dataset_name)
+  H5close()
+  
+  # If the metadata for the objects is a relation, grab the category and only include the parent if asked to do so:
+  if('parent' %in% names(objects)){
+    category_metadata_to_query <- get_table(db$filename,'metadata_properties') %>% 
+      filter(strsplit(col,"_")[[1]][2] == .$name)
+    
+    names(objects) <- c('parent','name')
+    categories <- h5read(file = db$filename, category_metadata_to_query$dataset_name)
+  }
   
   # Query timestamps:
   timestamps <- data.frame(time = h5read(file = db$filename, 
                                          name =  paste0('/metadata/times/',which_time))) %>% 
     mutate(time = lubridate::ymd_hms(time, quiet = TRUE))
+  H5close()
   
   # Grab the number of time periods to offset the beginning of the records by:
   period_offset <- h5readAttributes(file = db$filename,
                                     name = datasets_to_query$dataset_name[1])$period_offset
+  H5close()
 
   # Now construct the output by querying for the values, the names of the associated objects, any relations requested: 
   values <- data.frame(datasets_to_query) %>% 
-    group_by(dataset_name,collection,property,unit) %>% 
-    do(value = h5read(file = db$filename,
-                               name = .$dataset_name)) %>% 
-    ungroup() %>%
-    mutate(unit = unlist(unit)) %>% 
+    dplyr::group_by(dataset_name,collection,property,unit) %>% 
+    dplyr::do(value = matrix(drop(rhdf5::h5read(file = db$filename,
+                                  name = .$dataset_name)))) %>% 
+    dplyr::ungroup() %>%
+    dplyr::mutate(unit = unlist(unit)) %>% 
     tidyr::unnest() %>% 
-    mutate(value = as.double(value))
+    dplyr::mutate(value = drop(dplyr::pull(.$value,value)))
+  H5close()
   
   # The timestamps in an h5plexos db include an entire year's worth of entries even if the solution is
   # for a model that has a horizon of, say, six months. So, only keep the number of entries equal to the
@@ -399,10 +409,10 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   # Add timestamps and object names:
   out <- values %>% 
     mutate(time = rep(timestamps[seq(period_offset + 1, period_offset + num_timestamps_in_query),], 
-                      length.out =dim(values)[1])) %>% 
+                      length.out = dim(values)[1])) %>% 
     mutate(name = rep(objects$name,
                       each = num_timestamps_in_query,
-                      length.out =dim(values)[1])) %>% 
+                      length.out = dim(values)[1])) %>% 
     # mutate(name = rep(objects$category,
     #                   each = num_timestamps_in_query,
     #                   length.out =dim(values)[1])) %>% 
@@ -431,6 +441,8 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
       timestamps_for_year <- data.frame(time = h5read(file = db$filename, 
                                                   name =  paste0('/metadata/times/',props_avail$time[1]))) %>% 
         mutate(time = lubridate::ymd_hms(time, quiet = TRUE))
+      H5close()
+      
       period_offset_for_year <- h5readAttributes(file = db$filename,
                        name = props_avail$dataset_name[1])$period_offset
       
@@ -452,20 +464,31 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
                                     each = num_timestamps_in_query,
                                     length.out =dim(out)[1]))
     } else {
-      warning("This collection is a relation rather than an object, so it doesn't have 'categories' defined. Returning its children in that column instead.", call. = FALSE)
-      out <- mutate(out, category = rep(objects$child,
-                                      each = num_timestamps_in_query,
-                                      length.out =dim(out)[1]))
+      categories <- plyr::join(objects, categories, by = 'name', type = 'left') #join while keeping row order of objects
+      out <- mutate(out, category = rep(categories$category,
+                                    each = num_timestamps_in_query,
+                                    length.out =dim(out)[1]))
     } 
   }
   
+  if("parent" %in% columns.dots){
+    if("parent" %in% names(objects)) {
+      out <- mutate(out, parent = rep(objects$parent,
+                                        each = num_timestamps_in_query,
+                                        length.out =dim(out)[1]))
+    } else {
+      warning("No parent is defined by default for this collection, so returning `System` as the values for that column.")
+      out <- mutate(out, parent = 'System')
+    } 
+  }
+    
   if("region" %in% columns.dots){
     if(any(grepl("region",relations$parent))) {
-      objects <- left_join(out, h5read(file = db$filename, 
+      objects <- plyr::join(out, h5read(file = db$filename, 
                                        name = metadata_to_query[grepl("region",relations$parent),]$dataset_name),
                            by = c('name' = 'child'))
     } else if(any(grepl("region",relations$child))) {
-      objects <- left_join(out, h5read(file = db$filename, 
+      objects <- plyr::join(out, h5read(file = db$filename, 
                                        name = metadata_to_query[grepl("region",relations$child),]$dataset_name),
                            by = c('name' = 'parent'))
     }
@@ -476,11 +499,11 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   
   if("zone" %in% columns.dots){
     if(any(grepl("zone",relations$parent))) {
-      objects <- left_join(out, h5read(file = db$filename, 
+      objects <- plyr::join(out, h5read(file = db$filename, 
                                        name = metadata_to_query[grepl("zone",relations$parent),]$dataset_name),
                            by = c('name' = 'child'))
     } else if(any(grepl("zone",relations$child))) {
-      objects <- left_join(out, h5read(file = db$filename, 
+      objects <- plyr::join(out, h5read(file = db$filename, 
                                        name = metadata_to_query[grepl("zone",relations$child),]$dataset_name),
                            by = c('name' = 'parent'))
     }
