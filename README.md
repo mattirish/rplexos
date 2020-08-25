@@ -3,17 +3,37 @@
 [![AppVeyor Build Status](https://ci.appveyor.com/api/projects/status/github/NREL/rplexos?branch=master&svg=true)](https://ci.appveyor.com/project/NREL/rplexos)
 [![Coverage status](https://codecov.io/gh/NREL/rplexos/branch/master/graph/badge.svg)](https://codecov.io/github/NREL/rplexos?branch=master)
 
-`rplexos` is an R package developed to read and analyze PLEXOS solutions. This version currently only contains functions to query HDF5 databases created by H5PLEXOS. Future versions may enable for creation and querying of SQLite databases as well.
+rplexos is an R package developed to read and analyze PLEXOS solutions. This version currently only contains functions to query HDF5 databases created by H5PLEXOS. Future versions may enable for creation and querying of SQLite databases as well.
 
+## Getting started
+This HDF5-compatible version of rplexos isn't yet configured for installation via `install_packages()`. Instead, you'll source its four scripts and use its functions wherever you like.
 
-The "Getting started" vignette presents the preferred workflow to process PLEXOS solutions with this package.
-
+Start by cloning the h5-enabled version of rplexos:
+```bash
+git clone https://github.com/mattirish/rplexos
+cd rplexos; git checkout h5plexos
 ```
-library(rplexos)
-vignette("rplexos")
+
+Then in R, you'll need to install rhdf5 from bioconductor:
+```R
+source("https://bioconductor.org/biocLite.R")
+biocLite("rhdf5")
+```
+Then, each time you load a new workspace, don't load your normal rplexos package if you have that installed already. Instead, you'll have to source the scripts used in the h5-enabled rplexos:
+```
+library(rhdf5)
+library(dplyr)
+library(tidyr)
+
+rplexos_repo_path = <path to your rplexos repo>
+source(file.path(rplexos_repo_path,"R","plexos_open.R")
+source(file.path(rplexos_repo_path,"R","query.R")
+source(file.path(rplexos_repo_path,"R","query_summary.R")
+source(file.path(rplexos_repo_path,"R","auxiliary.R")
 ```
 
-# H5PLEXOS for rplexos: Use & Compatibility Notes
+Then you should be good to call `plexos_open()` and any of the `query_...` functions offered by the regular SQLite database-compatible rplexos. If there are any funky errors when you try to make queries, create an issue or email Matt Irish at matthew.irish@nrel.gov.
+
 ## What this H5PLEXOS-based rplexos offers that the old SQLite-based rplexos doesn't:
 - HDF5s created by H5PLEXOS can be accessed in R. Currently, RSQLite database cannot be without switching to the original rplexos. Queries are slightly faster since dramatically less data are read in for each query.
 
