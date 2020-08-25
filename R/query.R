@@ -354,7 +354,7 @@ query_master <- function(db, time, col, prop, columns = "name", time.range = NUL
 #'
 #' @keywords internal
 #' @export
-
+# db <- db2[1,]
 query_master_each <- function(db, time, col, prop, columns = "name", time.range = NULL, filter = NULL, phase = 4) {
   which_time <- time #alias to avoid confusion with `time` column in db
   # Grab whichever datasets should be queried:
@@ -394,11 +394,11 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   values <- data.frame(datasets_to_query) %>% 
     dplyr::group_by(dataset_name,collection,property,unit) %>% 
     dplyr::do(value = matrix(drop(rhdf5::h5read(file = db$filename,
-                                  name = .$dataset_name)))) %>% 
+                                                name = .$dataset_name)))) %>% 
     dplyr::ungroup() %>%
     dplyr::mutate(unit = unlist(unit)) %>% 
-    tidyr::unnest() %>% 
-    dplyr::mutate(value = drop(dplyr::pull(.$value,value)))
+    tidyr::unnest(value) %>% 
+    dplyr::mutate(value = drop(value))
   H5close()
   
   # The timestamps in an h5plexos db include an entire year's worth of entries even if the solution is

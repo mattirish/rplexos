@@ -18,15 +18,17 @@ vignette("rplexos")
 - HDF5s created by H5PLEXOS can be accessed in R. Currently, RSQLite database cannot be without switching to the original rplexos. Queries are slightly faster since dramatically less data are read in for each query.
 
 ## What this H5PLEXOS-based rplexos lacks that the old version has:
-- The "class group" and "class" of each property (e.g. "Electric" and "Generator" for the collection "Generator" and property "Generation") aren't currently included in H5PLEXOS databases, although the "collection" is, so those two fromer parameters don't appear in the H5PLEXOS-based version of rplexos's \code{query_property()}.
+- The "class group" and "class" of each property (e.g. "Electric" and "Generator" for the collection "Generator" and property "Generation") aren't currently included in H5PLEXOS databases, although the "collection" is, so those two fromer parameters don't appear in the H5PLEXOS-based version of rplexos's `query_property()`.
 - The inclusion of multiple bands, samples, and/or timeslices is not yet included: just one of each is assumed for each property. 
 - The "parent" column is not included in h5plexos query results, since it's almost always "System" and parent information is not tracked in H5PLEXOS databases for all object types. Queries for special relations included in h5plexos may be included in a future release.
 
 ## Use notes
+- This has only been tested using dplyr v1.0.0 and rlang v0.4.7. Any other versions of those packages may result in a sad, broken package.
 - The format of collection names is different from vintage RSQLite-based rplexos due to the different naming scheme used by H5PLEXOS. Examples below:
+
 	| vintage rplexos       | H5PLEXOS-based rplexos (this version) |
 	------------------------|----------------------------------------
-	| "Generator"		| "generators"                          |
+	| "Generator"		        | "generators"                          |
 	| "Reserve.Generators"	| "reserves_generators"                 |
 	
 	In other words, to change your vintage rplexos queries to enable them for this h5 version, just make everything lowercase and plural and switch periods to underscores. An internal mapping to accomodate the old format may be added in the future.
