@@ -26,11 +26,11 @@ vignette("rplexos")
 - This has only been tested using dplyr v1.0.0 and rlang v0.4.7. Any other versions of those packages may result in a sad, broken package.
 - The format of collection names is different from vintage RSQLite-based rplexos due to the different naming scheme used by H5PLEXOS. Examples below:
 
-	vintage rplexos | H5PLEXOS-based rplexos (this version)
-	--- | ---
-	"Generator"		| "generators"
-	"Reserve.Generators"	| "reserves_generators"
-
+	| vintage rplexos       | H5PLEXOS-based rplexos (this version) |
+	------------------------|----------------------------------------
+	| "Generator"		        | "generators"                          |
+	| "Reserve.Generators"	| "reserves_generators"                 |
+	
 	In other words, to change your vintage rplexos queries to enable them for this h5 version, just make everything lowercase and plural and switch periods to underscores. An internal mapping to accomodate the old format may be added in the future.
 - Any file with a ".h5" extension is assumed to be an h5plexos solution.
 - Note that yearly queries will currently erroneously contain the reporting from one model per scenario if there are no monthly- or interval-reported data in the solutions (this seems unlikely, but could be an issue).
