@@ -370,14 +370,14 @@ query_master_each <- function(db, time, col, prop, columns = "name", time.range 
   objects <- h5read(file = db$filename, (metadata_to_query %>%  filter(col == name))$dataset_name)
   H5close()
   
-  # If the metadata for the objects is a relation, grab the category and only include the parent if asked to do so:
-  if('parent' %in% names(objects)){
-    category_metadata_to_query <- get_table(db$filename,'metadata_properties') %>% 
-      filter(strsplit(col,"_")[[1]][2] == .$name)
-    
-    names(objects) <- c('parent','name')
-    categories <- h5read(file = db$filename, category_metadata_to_query$dataset_name)
-  }
+  # If the metadata for the objects is a relation, grab the category and only include the parent if asked to do so.
+  # Some collections don't have categories, so for those, throw an error if the category is requested.
+  if('parent' %in% names(objects) & strsplit(col,"_")[[1]][2] %in% get_table(db$filename,'metadata_properties')$name){
+    category_metadata_to_query <- get_table(db$filename,'metadata_properties') %>%
+        filter(strsplit(col,"_")[[1]][2] == .$name)
+        names(objects) <- c('parent','name')
+        categories <- h5read(file = db$filename, category_metadata_to_query$dataset_name)
+  } else if('parent' %in% names(objects)) stop('You are trying to query categories for a collection that does not have categories defined.')
   
   # Query timestamps:
   timestamps <- data.frame(time = h5read(file = db$filename, 
